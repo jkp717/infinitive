@@ -106,7 +106,9 @@ func (f *InfinityFrame) decode(buf []byte) bool {
 	f.dataLen = buf[4]
 	// Not sure what bytes 5 and 6 are
 	f.op = buf[7]
-	f.data = buf[8:l]
+	// copy the data from buf since buf will be reused after this frame is handed off to the receiveng goroutine
+	f.data = make([]byte, l-8)
+	copy(f.data, buf[8:l])
 
 	return true
 }

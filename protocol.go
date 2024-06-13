@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"time"
+	"fmt"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/tarm/serial"
@@ -14,7 +15,7 @@ const (
 	devSAM   = uint16(0x9201)
 )
 
-const responseTimeout = 200
+const responseTimeout = 500
 const responseRetries = 5
 
 type snoopCallback func(*InfinityFrame)
@@ -29,12 +30,37 @@ type InfinityProtocolSnoop struct {
 	cb     snoopCallback
 }
 
+type protocolStats struct {
+	rcvs	int64	// candidate frames received
+	frerrs	int64	// framing errors
+	frames	int64	// valid frames received
+	fself	int64	// frames addressed to me
+	fother	int64	// frames addressed to others
+	fsnoop	int64	// frames addressed to others, snooped
+
+	sresp	int64	// response msgs ordered
+	srd	int64	// action (originated) msgs ordered
+	srdt	int64	// action (originated) msgs ordered
+	swr	int64	// action (originated) msgs ordered
+
+	aact	int64	// actions originated
+	aretr	int64	// actions retransmitted
+	aother	int64	// something other than expected response when resp expected
+	aok1	int64	// actions processed OK w/o retrans
+	aokN	int64	// actions processed OK a retrans
+	aokms	int64	// total milliseconds of elapsed time for successful transactions (aok1 + aokN)
+	afail	int64	// actions failed
+	afailms	int64	// total milliseconds of elapsed time for failed transactions (afail)
+}
+
 type InfinityProtocol struct {
 	device     string
 	port       *serial.Port
 	responseCh chan *InfinityFrame
 	actionCh   chan *Action
 	snoops     []InfinityProtocolSnoop
+	statTime   int64		// time stats cleared (unix ms
+	stats	   *protocolStats
 }
 
 type Action struct {
@@ -71,6 +97,8 @@ func (p *InfinityProtocol) Open() error {
 	p.responseCh = make(chan *InfinityFrame, 32)
 	p.actionCh = make(chan *Action)
 
+	p.stats = new(protocolStats)
+
 	go p.reader()
 	go p.broker()
 
@@ -79,11 +107,15 @@ func (p *InfinityProtocol) Open() error {
 
 func (p *InfinityProtocol) handleFrame(frame *InfinityFrame) *InfinityFrame {
 	// log.Printf("read frame: %s", frame)
+	RLogger.Log(frame)
 
 	switch frame.op {
 	case opRESPONSE:
 		if frame.dst == devSAM {
+			p.stats.fself++
 			p.responseCh <- frame
+		} else {
+			p.stats.fother++
 		}
 
 		if len(frame.data) > 3 {
@@ -95,7 +127,10 @@ func (p *InfinityProtocol) handleFrame(frame *InfinityFrame) *InfinityFrame {
 		}
 	case opWRITE:
 		if frame.src == devTSTAT && frame.dst == devSAM {
+			p.stats.fself++
 			return writeAck
+		} else {
+			p.stats.fother++
 		}
 	}
 
@@ -123,6 +158,9 @@ func (p *InfinityProtocol) reader() {
 			p.port = nil
 			continue
 		}
+
+		p.stats.rcvs++
+
 		// log.Printf("%q", buf[:n])
 		msg = append(msg, buf[:n]...)
 		// log.Printf("buf len is: %v", len(msg))
@@ -139,14 +177,17 @@ func (p *InfinityProtocol) reader() {
 
 			frame := &InfinityFrame{}
 			if frame.decode(buf) {
+				p.stats.frames++
 				response := p.handleFrame(frame)
 				if response != nil {
+					p.stats.sresp++
 					p.sendFrame(response.encode())
 				}
 				// Intentionally didn't do msg = msg[l:] to avoid potential
 				// memory leak.  Not sure if it makes a difference...
 				msg = msg[:copy(msg, msg[l:])]
 			} else {
+				p.stats.frerrs++
 				// Corrupt message, move ahead one byte and continue parsing
 				msg = msg[:copy(msg, msg[1:])]
 			}
@@ -172,23 +213,47 @@ func (p *InfinityProtocol) performAction(action *Action) {
 	// log.Infof("encoded frame: %s", action.requestFrame)
 	encodedFrame := action.requestFrame.encode()
 
+	p.stats.aact++
+	stime := time.Now()
+
 	p.sendFrame(encodedFrame)
 	ticker := time.NewTicker(time.Millisecond * responseTimeout)
 	defer ticker.Stop()
 	for tries := 0; tries < responseRetries; {
 		select {
 		case res := <-p.responseCh:
+			// at this point we just know it's an opRRESPONSE but could be to someone else
+			// or to us from a different thread
 			if res.src != action.requestFrame.dst {
+				p.stats.aother++
 				continue
 			}
 
-			reqTable := action.requestFrame.data[0:3]
-			resTable := res.data[0:3]
+			// if it was a READ, the table must match; if it was a WRITE the resp len must be 1 and the resp must be 00
+			if action.requestFrame.op == opREAD {
+				// check for a write resp coming in for a read req, can happen if the write resp was delayed and we timed out waiting for it
+				if len(res.data) < 3 {
+					p.stats.aother++
+					continue;
+				}
 
-			if action.requestFrame.op == opREAD && !bytes.Equal(reqTable, resTable) {
-				log.Printf("got response for incorrect table, is: %x expected: %x", resTable, reqTable)
-				continue
+				reqTable := action.requestFrame.data[0:3]
+				resTable := res.data[0:3]
+
+				if !bytes.Equal(reqTable, resTable) {
+					p.stats.aother++
+					continue
+				}
+			} else if action.requestFrame.op == opWRITE {
+				if res.dataLen != 1 || !bytes.Equal(res.data[0:1], []byte{00}) {
+					p.stats.aother++
+					continue
+				}
 			}
+
+			if tries == 0 { p.stats.aok1++ } else {p.stats.aokN++ }
+			p.stats.aokms = p.stats.aokms + time.Since(stime).Milliseconds()
+
 			action.responseFrame = res
 			// log.Printf("got response!")
 			action.ok = true
@@ -197,12 +262,15 @@ func (p *InfinityProtocol) performAction(action *Action) {
 			return
 		case <-ticker.C:
 			log.Debug("timeout waiting for response, retransmitting frame")
+			p.stats.aretr++
 			p.sendFrame(encodedFrame)
 			tries++
 		}
 	}
 
 	log.Printf("action timed out")
+	p.stats.afailms = p.stats.afailms + time.Since(stime).Milliseconds()
+	p.stats.afail++
 	action.ch <- false
 }
 
@@ -237,6 +305,7 @@ func (p *InfinityProtocol) Write(dst uint16, table []byte, addr []byte, params i
 	buf.Write(addr[:])
 	binary.Write(buf, binary.BigEndian, params)
 
+	p.stats.swr++
 	return p.send(dst, opWRITE, buf.Bytes(), nil)
 }
 
@@ -246,12 +315,23 @@ func (p *InfinityProtocol) WriteTable(dst uint16, table InfinityTable, flags uin
 	return p.Write(dst, addr[:], fl, table)
 }
 
+// Update a table, specifying the zone index number (0 = Zone 1, 1 = Zone 2, etc).
+func (p *InfinityProtocol) WriteTableZ(dst uint16, table InfinityTable, zflag uint8, flags uint8) bool {
+	addr := table.addr()
+	fl := []byte{zflag, 0x00, flags} // not changing it now but experiments show that 2nd and 3rd bytes
+					// of fl are actually together a 16-bit flag set, which you'd need
+					// if you wanted to update the ninth or higher field in the table
+	return p.Write(dst, addr[:], fl, table)
+}
+
 func (p *InfinityProtocol) Read(dst uint16, addr InfinityTableAddr, params interface{}) bool {
+	p.stats.srd++
 	return p.send(dst, opREAD, addr[:], params)
 }
 
 func (p *InfinityProtocol) ReadTable(dst uint16, table InfinityTable) bool {
 	addr := table.addr()
+	p.stats.srdt++
 	return p.send(dst, opREAD, addr[:], table)
 }
 
@@ -276,3 +356,22 @@ func (p *InfinityProtocol) snoopResponse(srcMin uint16, srcMax uint16, cb snoopC
 	s := InfinityProtocolSnoop{srcMin: srcMin, srcMax: srcMax, cb: cb}
 	p.snoops = append(p.snoops, s)
 }
+
+func (p *InfinityProtocol) getStatsString() string {
+
+	ostats := p.stats
+	p.stats = new(protocolStats)
+
+	// calculate avgs
+	if ostats.aok1 > 0 || ostats.aokN > 0 {
+		ostats.aokms = ostats.aokms / (ostats.aok1 + ostats.aokN)
+	}
+
+	if ostats.afail > 0 {
+		ostats.afailms = ostats.afailms / ostats.afail
+	}
+	ss := fmt.Sprintf("%+v", ostats)
+
+	return ss
+}
+

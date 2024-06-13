@@ -6,22 +6,8 @@ type InfinityTable interface {
 }
 
 type TStatCurrentParams struct {
-	Z1CurrentTemp     uint8
-	Z2CurrentTemp     uint8
-	Z3CurrentTemp     uint8
-	Z4CurrentTemp     uint8
-	Z5CurrentTemp     uint8
-	Z6CurrentTemp     uint8
-	Z7CurrentTemp     uint8
-	Z8CurrentTemp     uint8
-	Z1CurrentHumidity uint8
-	Z2CurrentHumidity uint8
-	Z3CurrentHumidity uint8
-	Z4CurrentHumidity uint8
-	Z5CurrentHumidity uint8
-	Z6CurrentHumidity uint8
-	Z7CurrentHumidity uint8
-	Z8CurrentHumidity uint8
+	ZCurrentTemp      [8]uint8
+	ZCurrentHumidity  [8]uint8
 	Unknown1          uint8
 	OutdoorAirTemp    uint8
 	ZoneUnocc         uint8 // bitflags
@@ -35,61 +21,33 @@ func (params TStatCurrentParams) addr() InfinityTableAddr {
 }
 
 type TStatZoneParams struct {
-	Z1FanMode        uint8
-	Z2FanMode        uint8
-	Z3FanMode        uint8
-	Z4FanMode        uint8
-	Z5FanMode        uint8
-	Z6FanMode        uint8
-	Z7FanMode        uint8
-	Z8FanMode        uint8
+	ZFanMode         [8]uint8
 	ZoneHold         uint8 // bitflags
-	Z1HeatSetpoint   uint8
-	Z2HeatSetpoint   uint8
-	Z3HeatSetpoint   uint8
-	Z4HeatSetpoint   uint8
-	Z5HeatSetpoint   uint8
-	Z6HeatSetpoint   uint8
-	Z7HeatSetpoint   uint8
-	Z8HeatSetpoint   uint8
-	Z1CoolSetpoint   uint8
-	Z2CoolSetpoint   uint8
-	Z3CoolSetpoint   uint8
-	Z4CoolSetpoint   uint8
-	Z5CoolSetpoint   uint8
-	Z6CoolSetpoint   uint8
-	Z7CoolSetpoint   uint8
-	Z8CoolSetpoint   uint8
-	Z1TargetHumidity uint8
-	Z2TargetHumidity uint8
-	Z3TargetHumidity uint8
-	Z4TargetHumidity uint8
-	Z5TargetHumidity uint8
-	Z6TargetHumidity uint8
-	Z7TargetHumidity uint8
-	Z8TargetHumidity uint8
+	ZHeatSetpoint    [8]uint8
+	ZCoolSetpoint    [8]uint8
+	ZTargetHumidity  [8]uint8
 	FanAutoCfg       uint8
 	Unknown          uint8
-	Z1HoldDuration   uint16
-	Z2HoldDuration   uint16
-	Z3HoldDuration   uint16
-	Z4HoldDuration   uint16
-	Z5HoldDuration   uint16
-	Z6HoldDuration   uint16
-	Z7HoldDuration   uint16
-	Z8HoldDuration   uint16
-	Z1Name           [12]byte
-	Z2Name           [12]byte
-	Z3Name           [12]byte
-	Z4Name           [12]byte
-	Z5Name           [12]byte
-	Z6Name           [12]byte
-	Z7Name           [12]byte
-	Z8Name           [12]byte
+	ZOvrdDuration    [8]uint16
+	ZName            [8][12]byte
 }
 
 func (params TStatZoneParams) addr() InfinityTableAddr {
 	return InfinityTableAddr{0x00, 0x3B, 0x03}
+}
+
+// Damper status response from 4-zone damper controller
+// response to READ 00 03 19
+// Damper controls are 4-zone and on the first one, the first 4 zones are
+// represented with the next 4 being 0xff.  Assuming the
+// second damper controller (6101) populates the 2nd 4 zones in their
+// natural positions.
+type DamperParams struct {
+	ZDamperPosition [8]uint8
+}
+
+func (params DamperParams) addr() InfinityTableAddr {
+	return InfinityTableAddr{0x00, 0x03, 0x19}
 }
 
 type TStatVacationParams struct {
@@ -109,6 +67,7 @@ func (params TStatVacationParams) addr() InfinityTableAddr {
 type APIVacationConfig struct {
 	Active         *bool   `json:"active"`
 	Days           *uint8  `json:"days"`
+	Hours          *uint16 `json:"hours"`
 	MinTemperature *uint8  `json:"minTemperature"`
 	MaxTemperature *uint8  `json:"maxTemperature"`
 	MinHumidity    *uint8  `json:"minHumidity"`
@@ -117,7 +76,8 @@ type APIVacationConfig struct {
 }
 
 func (params TStatVacationParams) toAPI() APIVacationConfig {
-	api := APIVacationConfig{MinTemperature: &params.MinTemperature,
+	api := APIVacationConfig{Hours: &params.Hours,
+		MinTemperature: &params.MinTemperature,
 		MaxTemperature: &params.MaxTemperature,
 		MinHumidity:    &params.MinHumidity,
 		MaxHumidity:    &params.MaxHumidity}
@@ -125,7 +85,7 @@ func (params TStatVacationParams) toAPI() APIVacationConfig {
 	active := bool(params.Active == 1)
 	api.Active = &active
 
-	days := uint8(params.Hours / 7)
+	days := uint8((params.Hours + 23) / 24)
 	api.Days = &days
 
 	mode := rawFanModeToString(params.FanMode)
@@ -136,6 +96,19 @@ func (params TStatVacationParams) toAPI() APIVacationConfig {
 
 func (params *TStatVacationParams) fromAPI(config *APIVacationConfig) byte {
 	flags := byte(0)
+
+	if config.Active != nil {
+		params.Active = 0
+		if *config.Active == true {
+			params.Active = 1
+		}
+		flags |= 0x01
+	}
+
+	if config.Hours != nil {
+		params.Hours = *config.Hours
+		flags |= 0x02
+	}
 
 	if config.Days != nil {
 		params.Hours = uint16(*config.Days) * uint16(24)

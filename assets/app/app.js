@@ -44,6 +44,7 @@ app.factory('thermostatEvents', function ($websocket) {
 app.controller('thermostatController', function($scope, $http, $interval, $location, thermostatEvents) {
   $scope.tstat = {};
   $scope.blower = {};
+  $scope.heatpump = {};
 
   var $wsUrl = "ws://" + $location.host() + ":" + $location.port() + "/api/ws";
 
@@ -52,46 +53,48 @@ app.controller('thermostatController', function($scope, $http, $interval, $locat
        $scope.tstat = msg.data;
     } else if (msg.source == "blower") {
        $scope.blower = msg.data;
+    } else if (msg.source == "heatpump") {
+       $scope.heatpump = msg.data;
     }
   });
 
   // $scope.events = thermostatEvents;
 
   $scope.refreshState = function () {
-     $http.get("/api/zone/1/config").then(function(response) {
+     $http.get("/api/zone/0/config").then(function(response) {
       $scope.tstat = response.data;
     });
   };
 
-  $scope.setFanSpeed = function(speed) {
-    $http.put("/api/zone/1/config", { "fanMode": speed }).then(function(response) {
-      console.log("set fan speed") ;
+  $scope.setFanSpeed = function(zone,speed) {
+    $http.put("/api/zone/" + zone + "/config", { "fanMode": speed }).then(function(response) {
+      console.log("set fan speed zone " + zone + " to " + speed) ;
     });
   }
 
   $scope.setMode = function(mode) {
     $http.put("/api/zone/1/config", { "mode": mode }).then(function(response) {
-      console.log("set fan speed") ;
+      console.log("set mode to " + mode) ;
     });
   }
 
-  $scope.setHold = function(hold) {
-    $http.put("/api/zone/1/config", { "hold": hold }).then(function(response) {
-      console.log("set hold") ;
+  $scope.setHold = function(zone,hold) {
+    $http.put("/api/zone/" + zone + "/config", { "hold": hold }).then(function(response) {
+      console.log("set hold zone " + zone + " to " + hold) ;
     });
   }
 
-  $scope.incCoolSetpoint = function(val) {
-    var temp = $scope.tstat.coolSetpoint + val;
-    $http.put("/api/zone/1/config", { "coolSetpoint": temp }).then(function(response) {
-      console.log("set fan speed") ;
+  $scope.incCoolSetpoint = function(zone,val) {
+    var temp = $scope.tstat.zones[zone-1].coolSetpoint + val;
+    $http.put("/api/zone/" + zone + "/config", { "coolSetpoint": temp }).then(function(response) {
+      console.log("set cool setpoint zone " + zone + " to " + temp) ;
     });
   }
 
-  $scope.incHeatSetpoint = function(val) {
-    var temp = $scope.tstat.heatSetpoint + val;
-    $http.put("/api/zone/1/config", { "heatSetpoint": temp }).then(function(response) {
-      console.log("set fan speed") ;
+  $scope.incHeatSetpoint = function(zone,val) {
+    var temp = $scope.tstat.zones[zone-1].heatSetpoint + val;
+    $http.put("/api/zone/" + zone + "/config", { "heatSetpoint": temp }).then(function(response) {
+      console.log("set heat setpoint zone " + zone + " to " + temp) ;
     });
   }
 

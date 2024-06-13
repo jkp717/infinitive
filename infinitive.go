@@ -5,57 +5,51 @@ import (
 	"encoding/binary"
 	"flag"
 	"fmt"
+	"encoding/hex"
 	"os"
+	"strconv"
 	"time"
 
 	log "github.com/sirupsen/logrus"
 )
 
-type TStatZone0Config struct {
-	CurrentTempZ1     uint8  `json:"currentTempZ1"`
-	CurrentHumidityZ1 uint8  `json:"currentHumidityZ1"`
-	CurrentTempZ2     uint8  `json:"currentTempZ2"`
-	CurrentHumidityZ2 uint8  `json:"currentHumidityZ2"`
-	CurrentTempZ3     uint8  `json:"currentTempZ3"`
-	CurrentHumidityZ3 uint8  `json:"currentHumidityZ3"`
-	CurrentTempZ4     uint8  `json:"currentTempZ4"`
-	CurrentHumidityZ4 uint8  `json:"currentHumidityZ4"`
-	OutdoorTemp       uint8  `json:"outdoorTemp"`
-	Mode              string `json:"mode"`
-	Stage             uint8  `json:"stage"`
-	FanModeZ1         string `json:"fanModeZ1"`
-	FanModeZ2         string `json:"fanModeZ2"`
-	FanModeZ3         string `json:"fanModeZ3"`
-	FanModeZ4         string `json:"fanModeZ4"`
-	Hold              *bool  `json:"hold"`
-	HeatSetpointZ1    uint8  `json:"heatSetpointZ1"`
-	CoolSetpointZ1    uint8  `json:"coolSetpointZ1"`
-	HeatSetpointZ2    uint8  `json:"heatSetpointZ2"`
-	CoolSetpointZ2    uint8  `json:"coolSetpointZ2"`
-	HeatSetpointZ3    uint8  `json:"heatSetpointZ3"`
-	CoolSetpointZ3    uint8  `json:"coolSetpointZ3"`
-	HeatSetpointZ4    uint8  `json:"heatSetpointZ4"`
-	CoolSetpointZ4    uint8  `json:"coolSetpointZ4"`
-	RawMode           uint8  `json:"rawMode"`
-}
-
 type TStatZoneConfig struct {
+	ZoneNumber      uint8  `json:"zoneNumber,omitempty"`
 	CurrentTemp     uint8  `json:"currentTemp"`
 	CurrentHumidity uint8  `json:"currentHumidity"`
+	TargetHumidity  uint8  `json:"targetHumidity"`
+	ZoneName	string `json:"zoneName"`
+	FanMode         string `json:"fanMode"`
+	Hold            *bool  `json:"hold"`
+	Preset          string `json:"preset"`
+	HeatSetpoint    uint8  `json:"heatSetpoint"`
+	CoolSetpoint    uint8  `json:"coolSetpoint"`
+	OvrdDuration	string `json:"overrideDuration"`
+	OvrdDurationMins uint16 `json:"overrideDurationMins"`
+	// the following are global and should be removed from per-zone but are left in for compatibility for now
 	OutdoorTemp     uint8  `json:"outdoorTemp"`
 	Mode            string `json:"mode"`
 	Stage           uint8  `json:"stage"`
-	FanMode         string `json:"fanMode"`
-	Hold            *bool  `json:"hold"`
-	HeatSetpoint    uint8  `json:"heatSetpoint"`
-	CoolSetpoint    uint8  `json:"coolSetpoint"`
+	Action          string `json:"action"`
 	RawMode         uint8  `json:"rawMode"`
 }
 
+type TStatZonesConfig struct {
+	Zones             []TStatZoneConfig  `json:"zones,omitempty"`
+	OutdoorTemp       uint8  `json:"outdoorTemp"`
+	Mode              string `json:"mode"`
+	Stage             uint8  `json:"stage"`
+	Action            string `json:"action"`
+	RawMode           uint8  `json:"rawMode"`
+}
+
 type AirHandler struct {
-	BlowerRPM  uint16 `json:"blowerRPM"`
-	AirFlowCFM uint16 `json:"airFlowCFM"`
-	ElecHeat   bool   `json:"elecHeat"`
+	BlowerRPM      uint16  `json:"blowerRPM"`
+	AirFlowCFM     uint16  `json:"airFlowCFM"`
+	StaticPressure float32 `json:"staticPressure"`
+	HeatStage      uint8   `json:"heatStage"`
+	ElecHeat       bool    `json:"elecHeat"`
+	Action         string  `json:"action"`
 }
 
 type HeatPump struct {
@@ -64,9 +58,44 @@ type HeatPump struct {
 	Stage       uint8   `json:"stage"`
 }
 
+type DamperPosition struct {
+	DamperPos   [8]uint8 `json:"damperPosition"`
+}
+
+var zoneWeight [8]float32
+
+type Logger struct {
+	f	*os.File
+	basems int64
+	tds	string
+}
+
+var RLogger Logger;
+
 var infinity *InfinityProtocol
 
-func getZ0Config() (*TStatZone0Config, bool) {
+func holdTime(ht uint16) string {
+	if ht == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d:%02d", ht/60, ht % 60)
+}
+
+// get vacation config and status
+func getVacationConfig() (*APIVacationConfig, bool) {
+	vac := TStatVacationParams{}
+	ok := infinity.ReadTable(devTSTAT, &vac)
+	if !ok {
+		return nil, false
+	}
+
+	vacAPI := vac.toAPI()
+	return &vacAPI, true
+}
+
+// get config and status for all zones in one go
+// this is more efficient than getting each zone separately since all the zones' data comes in one pair of serial transactions
+func getZonesConfig() (*TStatZonesConfig, bool) {
 	cfg := TStatZoneParams{}
 	ok := infinity.ReadTable(devTSTAT, &cfg)
 	if !ok {
@@ -79,39 +108,162 @@ func getZ0Config() (*TStatZone0Config, bool) {
 		return nil, false
 	}
 
-	hold := new(bool)
-	*hold = cfg.ZoneHold&0x01 == 1
-
-	return &TStatZone0Config{
-		CurrentTempZ1:     params.Z1CurrentTemp,
-		CurrentTempZ2:     params.Z2CurrentTemp,
-		CurrentTempZ3:     params.Z3CurrentTemp,
-		CurrentTempZ4:     params.Z4CurrentTemp,
-		CurrentHumidityZ1: params.Z1CurrentHumidity,
-		CurrentHumidityZ2: params.Z2CurrentHumidity,
-		CurrentHumidityZ3: params.Z3CurrentHumidity,
-		CurrentHumidityZ4: params.Z4CurrentHumidity,
+	tstat := TStatZonesConfig{
 		OutdoorTemp:       params.OutdoorAirTemp,
 		Mode:              rawModeToString(params.Mode & 0xf),
 		Stage:             params.Mode >> 5,
-		FanModeZ1:         rawFanModeToString(cfg.Z1FanMode),
-		FanModeZ2:         rawFanModeToString(cfg.Z2FanMode),
-		FanModeZ3:         rawFanModeToString(cfg.Z3FanMode),
-		FanModeZ4:         rawFanModeToString(cfg.Z4FanMode),
-		Hold:              hold,
-		HeatSetpointZ1:    cfg.Z1HeatSetpoint,
-		CoolSetpointZ1:    cfg.Z1CoolSetpoint,
-		HeatSetpointZ2:    cfg.Z2HeatSetpoint,
-		CoolSetpointZ2:    cfg.Z2CoolSetpoint,
-		HeatSetpointZ3:    cfg.Z3HeatSetpoint,
-		CoolSetpointZ3:    cfg.Z3CoolSetpoint,
-		HeatSetpointZ4:    cfg.Z4HeatSetpoint,
-		CoolSetpointZ4:    cfg.Z4CoolSetpoint,
+		Action:            rawActionToString(params.Mode >> 5),
 		RawMode:           params.Mode,
-	}, true
+	}
+
+	zoneArr := [8]TStatZoneConfig{}
+
+	zc := 0
+	for zi := range params.ZCurrentTemp {
+		if params.ZCurrentTemp[zi] > 0 && params.ZCurrentTemp[zi] < 255 {
+			holdz := ((cfg.ZoneHold & (0x01 << zi)) != 0)
+			presetz := "none"
+
+			if holdz {
+				presetz = "hold"
+			}
+
+			zName := string(bytes.Trim(cfg.ZName[zi][:], " \000"))
+
+			zoneArr[zc] = TStatZoneConfig{
+					ZoneNumber:       uint8(zi+1),
+					CurrentTemp:      params.ZCurrentTemp[zi],
+					CurrentHumidity:  params.ZCurrentHumidity[zi],
+					FanMode:          rawFanModeToString(cfg.ZFanMode[zi]),
+					Hold:             &holdz,
+					Preset:           presetz,
+					HeatSetpoint:     cfg.ZHeatSetpoint[zi],
+					CoolSetpoint:     cfg.ZCoolSetpoint[zi],
+					OvrdDuration:     holdTime(cfg.ZOvrdDuration[zi]),
+					OvrdDurationMins: cfg.ZOvrdDuration[zi],
+					ZoneName:         zName }
+
+			zc++
+
+			// trigger MQTT discovery topic in case neede
+			mqttDiscoverZone(zi, zName)
+		}
+	}
+
+	tstat.Zones = zoneArr[0:zc]
+
+	return &tstat, true
 }
 
-func getZ1Config() (*TStatZoneConfig, bool) {
+
+// write a change to a single parameter of a single zone or global config
+// zn == 0 for global params or 1-8 for zone params
+// returns ok == true
+func putConfig(zone string, param string, value string) bool {
+	params := TStatZoneParams{}
+	flags := byte(0)
+
+	zn, err := strconv.Atoi(zone)
+	if err != nil {
+		log.Errorf("putConfig: invalid zone value '%s'", zone)
+		return false
+	}
+	zi := zn - 1
+
+	// zone parameters
+	if (zn >= 1 && zn <= 8) {
+		switch param {
+		case "fanMode":
+			if mode, ok := stringFanModeToRaw(value); !ok {
+				log.Errorf("putConfig: invalid fan mode name '%s' for zone %d", value, zn)
+				return false
+			} else {
+				params.ZFanMode[zi] = mode
+				flags |= 0x01
+			}
+		case "coolSetpoint":
+			if val, err := strconv.ParseUint(value, 10, 8); err != nil {
+				log.Errorf("putConfig: invalid cool setpoint value '%s' for zone %d", value, zn)
+				return false
+			} else {
+				params.ZCoolSetpoint[zi] = uint8(val)
+				flags |= 0x08
+			}
+		case "heatSetpoint":
+			if val, err := strconv.ParseUint(value, 10, 8); err != nil {
+				log.Errorf("putConfig: invalid heat setpoint value '%s' for zone %d", value, zn)
+				return false
+			} else {
+				params.ZHeatSetpoint[zi] = uint8(val)
+				flags |= 0x04
+			}
+		case "hold":	// dedicated 'hold' semantics
+			var val bool
+			switch value {
+				case "true":
+					val = true
+				case "false":
+					val = false
+				default:
+					log.Errorf("putConfig: invalid hold value '%s' for zone %d", value, zn)
+					return false
+				}
+			if val {
+				params.ZoneHold = 0x01 << zi
+			}
+			flags |= 0x02
+		case "preset":	// 'preset' semantics to control hold - extend this if we add more presets
+			var val bool
+			switch value {
+				case "hold":
+					val = true
+				case "none":
+					val = false
+				default:
+					log.Errorf("putConfig: invalid preset value '%s' for zone %d", value, zn)
+					return false
+				}
+			if val {
+				params.ZoneHold = 0x01 << zi
+			}
+			flags |= 0x02
+		default:
+			log.Errorf("putConfig: invalid parameter name '%s' for zone %d", param, zn)
+			return false
+		}
+
+		if flags != 0 {
+			log.Infof("calling WriteTableZ with flags: %d, 0x%x", zi, flags)
+			infinity.WriteTableZ(devTSTAT, params, uint8(zi), flags)
+		}
+
+		return true
+	} else if zn == 0 {
+		switch param {
+		case "mode":
+			if mode, ok := stringModeToRaw(value); !ok {
+				log.Errorf("putConfig: invalid mode value '%s'", value)
+				return false
+			} else {
+				p := TStatCurrentParams{Mode: mode}
+				infinity.WriteTable(devTSTAT, p, 0x10)
+				return true
+			}
+		default:
+			log.Errorf("putConfig: invalid parameter name '%s'", param)
+			return false
+		}
+	}
+
+	log.Errorf("putConfig: invalid zone number %d", zn)
+	return false
+}
+
+func getZNConfig(zi int) (*TStatZoneConfig, bool) {
+	if (zi < 0 || zi > 7) {
+		return nil, false
+	}
+
 	cfg := TStatZoneParams{}
 	ok := infinity.ReadTable(devTSTAT, &cfg)
 	if !ok {
@@ -124,112 +276,73 @@ func getZ1Config() (*TStatZoneConfig, bool) {
 		return nil, false
 	}
 
-	hold := new(bool)
-	*hold = cfg.ZoneHold&0x01 == 1
+	hold := cfg.ZoneHold & (0x01 << zi) != 0
+	presetz := "none"
+
+	if hold {
+		presetz = "hold"
+	}
 
 	return &TStatZoneConfig{
-		CurrentTemp:     params.Z1CurrentTemp,
-		CurrentHumidity: params.Z1CurrentHumidity,
+		CurrentTemp:     params.ZCurrentTemp[zi],
+		CurrentHumidity: params.ZCurrentHumidity[zi],
 		OutdoorTemp:     params.OutdoorAirTemp,
 		Mode:            rawModeToString(params.Mode & 0xf),
 		Stage:           params.Mode >> 5,
-		FanMode:         rawFanModeToString(cfg.Z1FanMode),
-		Hold:            hold,
-		HeatSetpoint:    cfg.Z1HeatSetpoint,
-		CoolSetpoint:    cfg.Z1CoolSetpoint,
+		Action:          rawActionToString(params.Mode >> 5),
+		FanMode:         rawFanModeToString(cfg.ZFanMode[zi]),
+		Hold:            &hold,
+		Preset:          presetz,
+		HeatSetpoint:    cfg.ZHeatSetpoint[zi],
+		CoolSetpoint:    cfg.ZCoolSetpoint[zi],
+		OvrdDuration:    holdTime(cfg.ZOvrdDuration[zi]),
+		OvrdDurationMins: cfg.ZOvrdDuration[zi],
+		ZoneName:        string(bytes.Trim(cfg.ZName[zi][:], " \000")),
+		TargetHumidity:  cfg.ZTargetHumidity[zi],
 		RawMode:         params.Mode,
 	}, true
 }
 
-func getZ2Config() (*TStatZoneConfig, bool) {
-	cfg := TStatZoneParams{}
-	ok := infinity.ReadTable(devTSTAT, &cfg)
-	if !ok {
-		return nil, false
+// write a change to a single parameter of a vacation setting
+// returns ok == true
+func putVacationConfig(param string, value string) bool {
+	params := TStatVacationParams{}
+	apiConfig := APIVacationConfig{}
+
+	switch param {
+	case "days":
+		if val, err := strconv.ParseUint(value, 10, 8); err != nil {
+			log.Errorf("putVacationConfig: invalid days value '%s'", value)
+			return false
+		} else {
+			v8 := uint8(val)
+			apiConfig.Days = &v8
+		}
+	case "hours":
+		if val, err := strconv.ParseUint(value, 10, 16); err != nil {
+			log.Errorf("putVacationConfig: invalid days value '%s'", value)
+			return false
+		} else {
+			v16 := uint16(val)
+			apiConfig.Hours = &v16
+		}
+	default:
+		log.Errorf("putVacationConfig: invalid parameter name '%s'", param)
+		return false
 	}
 
-	params := TStatCurrentParams{}
-	ok = infinity.ReadTable(devTSTAT, &params)
-	if !ok {
-		return nil, false
+	flags := params.fromAPI(&apiConfig)
+
+	if flags != 0 {
+		log.Infof("putVacationConfig: calling WriteTable with flags: 0x%x", flags)
+		infinity.WriteTable(devTSTAT, params, flags)
+	} else {
+		log.Warn("putVacationConfig: nothing to write")
 	}
 
-	hold := new(bool)
-	*hold = cfg.ZoneHold&0x01 == 1
-
-	return &TStatZoneConfig{
-		CurrentTemp:     params.Z2CurrentTemp,
-		CurrentHumidity: params.Z2CurrentHumidity,
-		OutdoorTemp:     params.OutdoorAirTemp,
-		Mode:            rawModeToString(params.Mode & 0xf),
-		Stage:           params.Mode >> 5,
-		FanMode:         rawFanModeToString(cfg.Z2FanMode),
-		Hold:            hold,
-		HeatSetpoint:    cfg.Z2HeatSetpoint,
-		CoolSetpoint:    cfg.Z2CoolSetpoint,
-		RawMode:         params.Mode,
-	}, true
+	return true
 }
 
-func getZ3Config() (*TStatZoneConfig, bool) {
-	cfg := TStatZoneParams{}
-	ok := infinity.ReadTable(devTSTAT, &cfg)
-	if !ok {
-		return nil, false
-	}
-
-	params := TStatCurrentParams{}
-	ok = infinity.ReadTable(devTSTAT, &params)
-	if !ok {
-		return nil, false
-	}
-
-	hold := new(bool)
-	*hold = cfg.ZoneHold&0x01 == 1
-
-	return &TStatZoneConfig{
-		CurrentTemp:     params.Z3CurrentTemp,
-		CurrentHumidity: params.Z3CurrentHumidity,
-		OutdoorTemp:     params.OutdoorAirTemp,
-		Mode:            rawModeToString(params.Mode & 0xf),
-		Stage:           params.Mode >> 5,
-		FanMode:         rawFanModeToString(cfg.Z3FanMode),
-		Hold:            hold,
-		HeatSetpoint:    cfg.Z3HeatSetpoint,
-		CoolSetpoint:    cfg.Z3CoolSetpoint,
-		RawMode:         params.Mode,
-	}, true
-}
-
-func getZ4Config() (*TStatZoneConfig, bool) {
-	cfg := TStatZoneParams{}
-	ok := infinity.ReadTable(devTSTAT, &cfg)
-	if !ok {
-		return nil, false
-	}
-
-	params := TStatCurrentParams{}
-	ok = infinity.ReadTable(devTSTAT, &params)
-	if !ok {
-		return nil, false
-	}
-
-	hold := new(bool)
-	*hold = cfg.ZoneHold&0x01 == 1
-
-	return &TStatZoneConfig{
-		CurrentTemp:     params.Z4CurrentTemp,
-		CurrentHumidity: params.Z4CurrentHumidity,
-		OutdoorTemp:     params.OutdoorAirTemp,
-		Mode:            rawModeToString(params.Mode & 0xf),
-		Stage:           params.Mode >> 5,
-		FanMode:         rawFanModeToString(cfg.Z4FanMode),
-		Hold:            hold,
-		HeatSetpoint:    cfg.Z4HeatSetpoint,
-		CoolSetpoint:    cfg.Z4CoolSetpoint,
-		RawMode:         params.Mode,
-	}, true
-}
 
 func getTstatSettings() (*TStatSettings, bool) {
 	tss := TStatSettings{}
@@ -251,8 +364,22 @@ func getTstatSettings() (*TStatSettings, bool) {
 	}, true
 }
 
+func getRawData(dev uint16, tbl []byte) {
+	var addr InfinityTableAddr
+	copy(addr[:], tbl[0:3])
+	raw := InfinityProtocolRawRequest{&[]byte{}}
+
+	success := infinity.Read(dev, addr, raw)
+
+	if success {
+		log.Debugf("RAW: %04x/%02x%02x%02x: %s", dev, tbl[0], tbl[1], tbl[2], hex.EncodeToString(*raw.data))
+	} else {
+		log.Debugf("RAW: %04x/%02x%02x%02x: timeout", dev, tbl[0], tbl[1], tbl[2])
+	}
+}
+
 func getAirHandler() (AirHandler, bool) {
-	b := cache.get("blower")
+	b := wsCache.get("blower")
 	tb, ok := b.(*AirHandler)
 	if !ok {
 		return AirHandler{}, false
@@ -261,7 +388,7 @@ func getAirHandler() (AirHandler, bool) {
 }
 
 func getHeatPump() (HeatPump, bool) {
-	h := cache.get("heatpump")
+	h := wsCache.get("heatpump")
 	th, ok := h.(*HeatPump)
 	if !ok {
 		return HeatPump{}, false
@@ -269,14 +396,83 @@ func getHeatPump() (HeatPump, bool) {
 	return *th, true
 }
 
-func statePoller() {
+func getDamperPosition() (DamperPosition, bool) {
+	h := wsCache.get("damperpos")
+	th, ok := h.(*DamperPosition)
+	if !ok {
+		return DamperPosition{}, false
+	}
+	return *th, true
+}
+
+func statePoller(monArray []uint16) {
+	mon_i := 0
 	for {
 		// called once for all zones
-		c1, ok := getZ1Config()
-		if ok {
-			cache.update("tstat", c1)
+		c1, c1ok := getZonesConfig()
+		c2, c2ok := getVacationConfig()
+
+		if c1ok {
+			wsCache.update("tstat", c1)
+			pf := "mqtt/infinitive"
+			var hum uint8
+			for zi := range c1.Zones {
+				zp := fmt.Sprintf("%s/zone/%d", pf, c1.Zones[zi].ZoneNumber)
+				mqttCache.update(zp+"/currentTemp", c1.Zones[zi].CurrentTemp)
+				mqttCache.update(zp+"/humidity", c1.Zones[zi].CurrentHumidity)
+				hum = c1.Zones[zi].CurrentHumidity
+				mqttCache.update(zp+"/coolSetpoint", c1.Zones[zi].CoolSetpoint)
+				mqttCache.update(zp+"/heatSetpoint", c1.Zones[zi].HeatSetpoint)
+				mqttCache.update(zp+"/fanMode", c1.Zones[zi].FanMode)
+				mqttCache.update(zp+"/hold", *c1.Zones[zi].Hold)
+				mqttCache.update(zp+"/overrideDurationMins", c1.Zones[zi].OvrdDurationMins)
+				if c2ok && *c2.Active {
+					mqttCache.update(zp+"/preset", "vacation")
+				} else {
+					mqttCache.update(zp+"/preset", c1.Zones[zi].Preset)
+				}
+			}
+
+			if hum > 0 {
+				mqttCache.update(pf+"/humidity", hum)
+			}
+			mqttCache.update(pf+"/outdoorTemp", c1.OutdoorTemp)
+			mqttCache.update(pf+"/mode", c1.Mode)
+			// mqttCache.update(pf+"/action", c1.Action) // replaced by action set from snoop messages
+			mqttCache.update(pf+"/rawMode", c1.RawMode)
 		}
+
+		if c2ok {
+			wsCache.update("vacation", c2)
+			pf := "mqtt/infinitive/vacation"
+			mqttCache.update(pf+"/active", *c2.Active)
+			mqttCache.update(pf+"/days", *c2.Days)
+			mqttCache.update(pf+"/hours", *c2.Hours)
+			mqttCache.update(pf+"/minTemp", *c2.MinTemperature)
+			mqttCache.update(pf+"/maxTemp", *c2.MaxTemperature)
+			mqttCache.update(pf+"/minHumidity", *c2.MinHumidity)
+			mqttCache.update(pf+"/maxHumidity", *c2.MaxHumidity)
+			mqttCache.update(pf+"/fanMode", *c2.FanMode)
+		}
+
+
+		// rotate through the registoer monitor probes, if any
+		if len(monArray) > 0 {
+			getRawData(0x2001, []byte{ 0x00, byte(monArray[mon_i] >> 8 & 0xff), byte(monArray[mon_i] & 0xff) })
+			mon_i = (mon_i + 1) % len(monArray)
+		}
+
 		time.Sleep(time.Second * 1)
+	}
+}
+
+func statsPoller() {
+	for {
+		// called once for all zones
+		ss := infinity.getStatsString()
+		log.Info("#STATS# ", ss)
+
+		time.Sleep(time.Second * 15)
 	}
 }
 
@@ -291,11 +487,14 @@ func attachSnoops() {
 				heatPump.OutsideTemp = float32(binary.BigEndian.Uint16(data[0:2])) / float32(16)
 				log.Debugf("heat pump coil temp is: %f", heatPump.CoilTemp)
 				log.Debugf("heat pump outside temp is: %f", heatPump.OutsideTemp)
-				cache.update("heatpump", &heatPump)
+				wsCache.update("heatpump", &heatPump)
+				mqttCache.update("mqtt/infinitive/coilTemp", heatPump.CoilTemp)
+				mqttCache.update("mqtt/infinitive/outsideTemp", heatPump.OutsideTemp)
 			} else if bytes.Equal(frame.data[0:3], []byte{0x00, 0x3e, 0x02}) {
 				heatPump.Stage = data[0] >> 1
 				log.Debugf("HP stage is: %d", heatPump.Stage)
-				cache.update("heatpump", &heatPump)
+				wsCache.update("heatpump", &heatPump)
+				mqttCache.update("mqtt/infinitive/coolStage", heatPump.Stage)
 			}
 		}
 	})
@@ -306,23 +505,134 @@ func attachSnoops() {
 		airHandler, ok := getAirHandler()
 		if ok {
 			if bytes.Equal(frame.data[0:3], []byte{0x00, 0x03, 0x06}) {
-				airHandler.BlowerRPM = binary.BigEndian.Uint16(data[1:5])
+				airHandler.BlowerRPM = binary.BigEndian.Uint16(data[1:3])
 				log.Debugf("blower RPM is: %d", airHandler.BlowerRPM)
-				cache.update("blower", &airHandler)
+				wsCache.update("blower", &airHandler)
+				mqttCache.update("mqtt/infinitive/blowerRPM", airHandler.BlowerRPM)
 			} else if bytes.Equal(frame.data[0:3], []byte{0x00, 0x03, 0x16}) {
-				airHandler.AirFlowCFM = binary.BigEndian.Uint16(data[4:8])
+				airHandler.HeatStage = uint8(data[0])
+				airHandler.AirFlowCFM = binary.BigEndian.Uint16(data[4:6])
+				airHandler.StaticPressure = float32(float32(int(float32(binary.BigEndian.Uint16(data[7:9])) / float32(65536) * 10000 + 0.5))/10000.0)
 				airHandler.ElecHeat = data[0]&0x03 != 0
+				switch {
+				case data[2] & 0x03 != 0:
+					airHandler.Action = "cooling"
+				case data[0] & 0x03 != 0:
+					airHandler.Action = "heating"
+				default:
+					airHandler.Action = "idle"
+				}
 				log.Debugf("air flow CFM is: %d", airHandler.AirFlowCFM)
-				cache.update("blower", &airHandler)
+				wsCache.update("blower", &airHandler)
+				mqttCache.update("mqtt/infinitive/heatStage", airHandler.HeatStage)
+				mqttCache.update("mqtt/infinitive/action", airHandler.Action)
+				mqttCache.update("mqtt/infinitive/airflowCFM", airHandler.AirFlowCFM)
+				mqttCache.update("mqtt/infinitive/staticPressure", airHandler.StaticPressure)
 			}
 		}
 	})
 
+	// Snoop zone controllers 0x6001 and 0x6101 (up to 8 zones total)
+	infinity.snoopResponse(0x6000, 0x61ff, func(frame *InfinityFrame) {
+		// log.Debug("DamperMsg: ", data)
+		data := frame.data[3:]
+		damperPos, ok := getDamperPosition()
+		if ok {
+			if bytes.Equal(frame.data[0:3], []byte{0x00, 0x03, 0x19}) {
+				var tdw float32
+				for zi := range damperPos.DamperPos {
+					if data[zi] != 0xff {
+						damperPos.DamperPos[zi] = uint8(data[zi])
+						mqttCache.update(fmt.Sprintf("mqtt/infinitive/zone/%d/damperPos", zi+1), uint(damperPos.DamperPos[zi]) * 100 / 15)
+						tdw += zoneWeight[zi] * float32(damperPos.DamperPos[zi])
+					}
+				}
+				// calculate the airflow factor per zone if we have something
+				if tdw > 0 {
+					for zi := range damperPos.DamperPos {
+						if data[zi] != 0xff {
+							damperPos.DamperPos[zi] = uint8(data[zi])
+							mqttCache.update(fmt.Sprintf("mqtt/infinitive/zone/%d/flowWeight", zi+1), (zoneWeight[zi] * float32(damperPos.DamperPos[zi]) / tdw))
+						}
+					}
+				}
+				log.Debug("zone damper positions: ", damperPos.DamperPos)
+				wsCache.update("damperpos", &damperPos)
+			}
+		}
+	})
+}
+
+
+func (l *Logger) Open() (ok bool) {
+	ok = true
+
+	tds := time.Now().Format("06010215")
+	rlfn := fmt.Sprintf("resplog.%s", tds)
+	f, err := os.OpenFile(rlfn, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0755)
+	if err != nil {
+		log.Errorf("Failed to open resp log file '%s': %s", rlfn, err)
+		ok = false
+	} else {
+		log.Info("Opened resp log file '%s'", rlfn)
+		of := l.f
+		l.f = f
+		l.tds = tds
+		if of != nil {
+			of.Close()
+		}
+	}
+	l.basems = time.Now().UnixMilli()
+	return
+}
+
+func (l *Logger) CheckRotate() {
+	if l != nil && l.tds != "" && l.tds != time.Now().Format("06010215") {
+		l.Open()
+	}
+}
+
+func (l *Logger) Close() {
+	l.CheckRotate()
+	if l.f != nil {
+		err := l.f.Close()
+		if (err != nil) {
+			log.Warnf("Error on closing resp logger: %", err)
+		} else {
+			l.f = nil
+		}
+	}
+}
+
+func (l *Logger) Log(frame *InfinityFrame) {
+	l.CheckRotate()
+	if l.f != nil {
+		l.f.WriteString(fmt.Sprintf("[%s] ", time.Now().Format(time.Stamp)));
+		_, err := l.f.WriteString(frame.String())
+		if err != nil { log.Error("Logger WriteString failed: ", err) }
+		l.f.WriteString("\n")
+		err = l.f.Sync()
+		if err != nil { log.Error("Logger Sync failed: ", err) }
+	}
+}
+
+func (l *Logger) LogS(s string) {
+	if l.f != nil {
+		l.f.WriteString(fmt.Sprintf("[%s] ", time.Now().Format(time.Stamp)));
+		_, err := l.f.WriteString(s)
+		if err != nil { log.Error("s.Logger WriteString failed: ", err) }
+		l.f.WriteString("\n")
+		err = l.f.Sync()
+		if err != nil { log.Error("s.Logger Sync failed: ", err) }
+	}
 }
 
 func main() {
 	httpPort := flag.Int("httpport", 8080, "HTTP port to listen on")
 	serialPort := flag.String("serial", "", "path to serial port")
+	mqttBrokerUrl := flag.String("mqtt", "", "url for mqtt broker")
+	doRespLog := flag.Bool("rlog", false, "enable resp log")
+	doDebugLog := flag.Bool("debug", false, "enable debug log level")
 
 	flag.Parse()
 
@@ -332,19 +642,59 @@ func main() {
 		os.Exit(1)
 	}
 
-	log.SetLevel(log.DebugLevel)
+	loglevel := log.InfoLevel
+	if doDebugLog != nil && *doDebugLog { loglevel = log.DebugLevel }
+	log.SetLevel(loglevel)
+
+	customFormatter := new(log.TextFormatter)
+	customFormatter.TimestampFormat = "2006-01-02 15:04:05"
+	customFormatter.FullTimestamp = true
+	log.SetFormatter(customFormatter)
+
+	if doRespLog != nil && *doRespLog {
+		if !RLogger.Open() {
+			panic("unable to open resp log file")
+		}
+		defer RLogger.Close()
+	}
 
 	infinity = &InfinityProtocol{device: *serialPort}
 	airHandler := new(AirHandler)
 	heatPump := new(HeatPump)
-	cache.update("blower", airHandler)
-	cache.update("heatpump", heatPump)
+	damperPos := new(DamperPosition)
+	wsCache.update("blower", airHandler)
+	wsCache.update("heatpump", heatPump)
+	wsCache.update("damperpos", damperPos)
+
+	// init zone airflow weights (doesn't seem to be pollable so need to configure these)
+	zoneRelPct := [8]float32{55, 33}
+	zoneLeakagePct := float32(12)
+
+	// calculate zone weights, will total 100
+	zoneTotalRelPct := float32(0)
+	for _, v := range zoneRelPct {
+		zoneTotalRelPct += v
+	}
+	for i, v := range zoneRelPct {
+		zoneWeight[i] = (zoneLeakagePct * (v / zoneTotalRelPct) + zoneRelPct[i])/100
+	}
+
+	rawMonTable := []uint16{
+		// 0x3c01, 0x3c03, 0x3c0a, 0x3c0b, 0x3c0c, 0x3c0d, 0x3c0e, 0x3c0f, 0x3c14, 0x3d02, 0x3d03, 
+		0x3b05, 0x3b06, 0x3b0e, 0x3b0f, 0x3d02, 0x3d03,
+	}
+
 	attachSnoops()
 	err := infinity.Open()
 	if err != nil {
 		log.Panicf("error opening serial port: %s", err.Error())
 	}
 
-	go statePoller()
+	if mqttBrokerUrl != nil {
+		ConnectMqtt(*mqttBrokerUrl, os.Getenv("MQTTPASS"))
+	}
+
+	go statePoller(rawMonTable)
+	go statsPoller()
 	webserver(*httpPort)
 }

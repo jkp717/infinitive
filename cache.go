@@ -5,36 +5,47 @@ import (
 	"sync"
 )
 
-type Cache map[string]interface{}
+type cacheMapType map[string]interface{}
+type Cache struct {
+	cacheMap cacheMapType
+	cacheMutex sync.Mutex
+}
 
-var cache Cache = make(Cache)
-var mutex = &sync.Mutex{}
+var wsCache Cache = Cache{ cacheMap: make(cacheMapType) }
+var mqttCache Cache = Cache{ cacheMap: make(cacheMapType) }
 
-func (c Cache) update(name string, data interface{}) {
-	mutex.Lock()
-	defer mutex.Unlock()
+func (c *Cache) update(name string, data interface{}) {
+	c.cacheMutex.Lock()
+	defer c.cacheMutex.Unlock()
 
-	old := c[name]
+	old := c.cacheMap[name]
 	if !reflect.DeepEqual(old, data) {
 		Dispatcher.broadcastEvent(name, data)
-		c[name] = data
+		c.cacheMap[name] = data
 	}
 }
 
-func (c Cache) get(name string) interface{} {
-	mutex.Lock()
-	defer mutex.Unlock()
+func (c *Cache) get(name string) interface{} {
+	c.cacheMutex.Lock()
+	defer c.cacheMutex.Unlock()
 
-	return c[name]
+	return c.cacheMap[name]
 }
 
-func (c Cache) dump() Cache {
-	mutex.Lock()
-	defer mutex.Unlock()
+func (c *Cache) clear() {
+	c.cacheMutex.Lock()
+	defer c.cacheMutex.Unlock()
 
-	n := make(Cache)
-	for k, v := range c {
-		c[k] = v
+	c.cacheMap = make(cacheMapType)
+}
+
+func (c *Cache) dump() cacheMapType {
+	c.cacheMutex.Lock()
+	defer c.cacheMutex.Unlock()
+
+	n := make(cacheMapType)
+	for k, v := range c.cacheMap {
+		n[k] = v
 	}
 	return n
 }

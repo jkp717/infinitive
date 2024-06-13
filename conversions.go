@@ -20,18 +20,18 @@ func rawModeToString(mode uint8) string {
 	}
 }
 
-func stringModeToRaw(mode string) uint8 {
+func stringModeToRaw(mode string) (uint8, bool) {
 	switch mode {
 	case "heat":
-		return 0
+		return 0, true
 	case "cool":
-		return 1
+		return 1, true
 	case "auto":
-		return 2
+		return 2, true
 	case "off":
-		return 5
+		return 5, true
 	default:
-		return 5
+		return 5, false
 	}
 }
 
@@ -62,5 +62,19 @@ func stringFanModeToRaw(mode string) (uint8, bool) {
 		return 3, true
 	default:
 		return 0, false
+	}
+}
+
+func rawActionToString(action uint8) string {
+	switch action {
+	case 0:
+		return "idle" // heat source: "system in control"
+	case 1:
+		return "cooling"
+	case 2:
+		return "cooling"
+	default:
+		return "heating" // electric heat only - fan coil system
+		// on a furnace system perhaps this is furnace only - untested
 	}
 }

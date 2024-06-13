@@ -1,29 +1,122 @@
-<br>
+<br/>
 <div class="container">
   <div class="jumbotron">
+	  <div ng-repeat="zone in tstat.zones">
 
+  <!-- start of zone* div-->
     <div class="row">
 
       <div class="col-xs-12 col-md-6 col-md-push-3 well">
 	<div class="row row-centered">
-          <div class="col-xs-6">
-          <h5>Room Temperature</h5>
-          </div>
-          <div class="col-xs-6">
-          <h5>Outdoor Temperature</h5>
-          </div>
-          <div class="col-xs-6">
-          <h1>{{ tstat.currentTemp }}&deg;</h1>
-          {{ tstat.currentHumidity }}% Humidity
-          </div>
-          <div class="col-xs-6">
-          <h1>{{ tstat.outdoorTemp }}&deg;</h1>
-          </div>
-	</div>
+		<h5>{{ zone.zoneName }} Temperature</h5>
+        </div>
 	<div class="row row-centered">
-           <h5>Mode: 
-              <span class="text-primary" ng-show="tstat.stage == 1">(HP Stage 1)</span>
-              <span class="text-primary" ng-show="tstat.stage == 2">(HP Stage 2)</span>
+          <h1>{{ zone.currentTemp }}&deg;</h1>
+          {{ zone.currentHumidity }}% Humidity
+	</div>
+
+        <div class="row row-centered">
+	   <div class="row">
+<div class="col-xs-7">
+	<h5>Fan</h5>
+             <div class="btn-group" role="group">
+               <a role="button" class="btn btn-default btm-sm" ng-disabled="zone.fanMode == 'auto'" ng-click="setFanSpeed(zone.zoneNumber,'auto')">
+                 Auto
+               </a>
+               <a role="button" class="btn btn-default btm-sm" ng-disabled="zone.fanMode == 'low'" ng-click="setFanSpeed(zone.zoneNumber,'low')">
+              &#x25B8;
+               </a>
+               <a role="button" class="btn btn-default btm-sm" ng-disabled="zone.fanMode == 'med'" ng-click="setFanSpeed(zone.zoneNumber,'med')">
+                 &#x25B8;&#x25B8;
+               </a>
+               <a role="button" class="btn btn-default btm-sm" ng-disabled="zone.fanMode == 'high'" ng-click="setFanSpeed(zone.zoneNumber,'high')">
+                 &#x25B8;&#x25B8;&#x25B8;
+               </a>
+             </div>
+           </div>
+
+<div class="col-xs-4">
+<h5>Hold
+	<span ng-hide="!zone.overrideDuration">{{ zone.overrideDuration }}</span>
+</h5>
+             <div class="btn-group" role="group">
+               <a role="button" class="btn btn-default btm-sm" ng-disabled="!zone.hold" ng-click="setHold(zone.zoneNumber,false)">Off</a>
+               <a role="button" class="btn btn-default btm-sm" ng-disabled="zone.hold" ng-click="setHold(zone.zoneNumber,true)">On</a>
+           </div>
+        </div>
+    </div>
+    </div>
+      </div>
+
+
+      <div class="col-xs-6 col-md-3 col-md-pull-6">
+        <div class="col-xs-12 well">
+          <div class="row row-centered">
+  	   <div class="col-xs-12 col-md-12">
+                <h5>Cool Setpoint</h5>
+             </div>
+  	   <div class="col-xs-4 col-md-12">
+             <a role="button" class="btn btn-default btn-sm" ng-click="incCoolSetpoint(zone.zoneNumber,1)">
+             <span class="glyphicon glyphicon-triangle-top"></span>
+           </a>
+           </div>
+	   <div class="col-xs-4 col-md-12">
+           <h2>{{ zone.coolSetpoint }}&deg;</h2>
+           </div>
+	   <div class="col-xs-4 col-md-12">
+           <a role="button" class="btn btn-default btn-sm" ng-click="incCoolSetpoint(zone.zoneNumber,-1)">
+              <span class="glyphicon glyphicon-triangle-bottom"></span>
+           </a>
+           </div>
+        </div>
+      </div>
+      </div>
+    <div class="col-xs-6 col-md-3">
+        <div class="col-xs-12 well">
+      <div class="row row-centered">
+        <div class="col-xs-12 col-md-12">
+           <h5>Heat Setpoint</h5>
+        </div>
+        <div class="col-xs-4 col-md-12">
+           <a role="button" class="btn btn-default btn-sm" ng-click="incHeatSetpoint(zone.zoneNumber,1)">
+              <span class="glyphicon glyphicon-triangle-top"></span>
+           </a>
+        </div>
+        <div class="col-xs-4 col-md-12">
+           <h2>{{ zone.heatSetpoint }}&deg;</h2>
+        </div>
+        <div class="col-xs-4 col-md-12">
+           <a role="button" class="btn btn-default btn-sm" ng-click="incHeatSetpoint(zone.zoneNumber,-1)">
+              <span class="glyphicon glyphicon-triangle-bottom"></span>
+           </a>
+        </div>
+      </div>
+      </div>
+    </div>
+      </div>
+  <!-- end of zone* div-->
+
+	  </div>
+
+  <!-- start of global -->
+    <div class="row">
+
+      <div class="col-xs-12 col-md-6 col-md-push-3 well">
+	<div class="row row-centered">
+          <h5>Outdoor Temperature</h5>
+        </div>
+	<div class="row row-centered">
+          <h1>{{ tstat.outdoorTemp }}&deg;</h1>
+	</div>
+
+	<div class="row row-centered">
+           <h5>Fan:
+		<span ng-show="blower.blowerRPM == 0">Off</span>
+		<span ng-hide="blower.blowerRPM == 0">{{ blower.blowerRPM }} RPM ({{ blower.airFlowCFM }} CFM)</span>
+	   </h5>
+           <h5>Mode
+              <span class="text-primary" ng-show="tstat.stage == 1">(AC Stage 1)</span>
+              <span class="text-primary" ng-show="tstat.stage == 2">(AC Stage 2)</span>
               <span class="text-danger" ng-show="tstat.stage > 2">(Electric Heat Active)</span>              
            </h5>
           <div class="btn-group" role="group">
@@ -52,81 +145,11 @@
           </div>
         </div>
 
-        <div class="row row-centered">
-	   <div class="row">
-<div class="col-xs-7">
-              <h5>Fan (<span ng-show="blower.blowerRPM == 0">Off</span><span ng-hide="blower.blowerRPM == 0">{{ blower.blowerRPM }} RPM</span>)</h5>
-             <div class="btn-group" role="group">
-               <a role="button" class="btn btn-default btm-sm" ng-disabled="tstat.fanMode == 'auto'" ng-click="setFanSpeed('auto')">
-                 Auto
-               </a>
-               <a role="button" class="btn btn-default btm-sm" ng-disabled="tstat.fanMode == 'low'" ng-click="setFanSpeed('low')">
-              &#x25B8;
-               </a>
-               <a role="button" class="btn btn-default btm-sm" ng-disabled="tstat.fanMode == 'med'" ng-click="setFanSpeed('med')">
-                 &#x25B8;&#x25B8;
-               </a>
-               <a role="button" class="btn btn-default btm-sm" ng-disabled="tstat.fanMode == 'high'" ng-click="setFanSpeed('high')">
-                 &#x25B8;&#x25B8;&#x25B8;
-               </a>
-             </div>
-           </div>
-
-<div class="col-xs-4">
-<h5>Hold</h5>
-             <div class="btn-group" role="group">
-               <a role="button" class="btn btn-default btm-sm" ng-disabled="!tstat.hold" ng-click="setHold(false)">Off</a>
-               <a role="button" class="btn btn-default btm-sm" ng-disabled="tstat.hold" ng-click="setHold(true)">On</a>
-           </div>
-        </div>
     </div>
     </div>
 
 
-      </div>
-      <div class="col-xs-6 col-md-3 col-md-pull-6">
-        <div class="col-xs-12 well">
-          <div class="row row-centered">
-  	   <div class="col-xs-12 col-md-12">
-                <h5>Cool Setpoint</h5>
-             </div>
-  	   <div class="col-xs-4 col-md-12">
-             <a role="button" class="btn btn-default btn-sm" ng-click="incCoolSetpoint(1)">
-             <span class="glyphicon glyphicon-triangle-top"></span>
-           </a>
-           </div>
-	   <div class="col-xs-4 col-md-12">
-           <h2>{{ tstat.coolSetpoint }}&deg;</h2>
-           </div>
-	   <div class="col-xs-4 col-md-12">
-           <a role="button" class="btn btn-default btn-sm" ng-click="incCoolSetpoint(-1)">
-              <span class="glyphicon glyphicon-triangle-bottom"></span>
-           </a>
-           </div>
-        </div>
-      </div>
-      </div>
-    <div class="col-xs-6 col-md-3">
-        <div class="col-xs-12 well">
-      <div class="row row-centered">
-        <div class="col-xs-12 col-md-12">
-           <h5>Heat Setpoint</h5>
-        </div>
-        <div class="col-xs-4 col-md-12">
-           <a role="button" class="btn btn-default btn-sm" ng-click="incHeatSetpoint(1)">
-              <span class="glyphicon glyphicon-triangle-top"></span>
-           </a>
-        </div>
-        <div class="col-xs-4 col-md-12">
-           <h2>{{ tstat.heatSetpoint }}&deg;</h2>
-        </div>
-        <div class="col-xs-4 col-md-12">
-           <a role="button" class="btn btn-default btn-sm" ng-click="incHeatSetpoint(-1)">
-              <span class="glyphicon glyphicon-triangle-bottom"></span>
-           </a>
-        </div>
-      </div>
-      </div>
-    </div>
+  <!-- end of global -->
+
   </div>
 </div>
